@@ -1,9 +1,11 @@
+import dns from "node:dns";
+dns.setServers(["8.8.8.8", "8.8.4.4"]);
 import dotenv from "dotenv";
 dotenv.config();
 
 import express from "express";
 import cors from "cors";
-import { MongoClient, ServerApiVersion } from "mongodb";
+import { MongoClient, ServerApiVersion, ObjectId } from "mongodb";
 import { jwtVerify, createRemoteJWKSet } from "jose";
 
 const app = express();
@@ -12,19 +14,26 @@ const port = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-const uri = process.env.MONGO_URI;
+const uri = process.env.MONGODB_URI;
 const client = new MongoClient(uri, {
-  serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true },
+  serverApi: {
+    version: ServerApiVersion.v1,
+    strict: true,
+    deprecationErrors: true,
+  },
 });
 
-const JWKS = createRemoteJWKSet(new URL(process.env.PUBLIC_CLIENT_URL + "/api/auth/jwks"));
+const JWKS = createRemoteJWKSet(
+  new URL(process.env.PUBLIC_CLIENT_URL + "/api/auth/jwks"),
+);
 
 // Middlewares
 const authMiddleware = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
-    if (!authHeader?.startsWith("Bearer ")) return res.status(401).json({ success: false, message: "Unauthorized" });
-    
+    if (!authHeader?.startsWith("Bearer "))
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+
     const token = authHeader.split(" ")[1];
     const { payload } = await jwtVerify(token, JWKS);
     req.user = payload;
@@ -46,15 +55,303 @@ async function run() {
     await client.connect();
     console.log("Connected to MongoDB!");
 
-    // Database access
+    // DB Collections
     const db = client.db("book-verse");
-    
-    app.get("/", (req, res) => res.send("Server is running fine!"));
+    const usersCollection = db.collection("users");
+    const ebooksCollection = db.collection("ebooks");
 
-    // Example Route
-    app.get("/api/example", authMiddleware, checkRoleMiddleware(["admin"]), (req, res) => {
-      res.send("Success");
+    // 1. User Role
+    app.patch("/api/users/update-role", authMiddleware, async (req, res) => {
+      const result = await usersCollection.updateOne(
+        { email: req.user.email },
+        { $set: { role: req.body.role } },
+      );
+      res.send(result);
     });
+
+    // 2. Home Page
+    app.get("/api/public/home", async (req, res) => {
+      const ebooks = await ebooksCollection
+        .find({ status: "available" })
+        .sort({ createdAt: -1 })
+        .limit(6)
+        .toArray();
+      const topWriters = await usersCollection
+        .find({ role: "writer" })
+        .limit(3)
+        .toArray();
+      res.send({ ebooks, topWriters });
+    });
+
+    app.get("/api/ebooks/:id", async (req, res) => {
+      const data = await ebooksCollection.findOne({
+        _id: new ObjectId(req.params.id),
+      });
+      res.send(data);
+    });
+
+    // 3. Browse Page
+    app.get("/api/ebooks", async (req, res) => {
+      const {
+        search,
+        genre,
+        minPrice,
+        maxPrice,
+        availability,
+        sortBy,
+        page = 1,
+        limit = 8,
+      } = req.query;
+      let query = {};
+
+      if (search) {
+        query.$or = [
+          { title: { $regex: search, $options: "i" } },
+          { writerName: { $regex: search, $options: "i" } },
+        ];
+      }
+      if (genre) query.genre = genre;
+      if (availability) query.status = availability;
+      if (minPrice || maxPrice) {
+        query.price = {
+          $gte: parseFloat(minPrice || 0),
+          $lte: parseFloat(maxPrice || 9999),
+        };
+      }
+
+      let sortOpts = { createdAt: -1 };
+      if (sortBy === "price-low") sortOpts = { price: 1 };
+      if (sortBy === "price-high") sortOpts = { price: -1 };
+
+      const skip = (parseInt(page) - 1) * parseInt(limit);
+      const data = await ebooksCollection
+        .find(query)
+        .sort(sortOpts)
+        .skip(skip)
+        .limit(parseInt(limit))
+        .toArray();
+      const total = await ebooksCollection.countDocuments(query);
+
+      res.send({
+        data,
+        totalPages: Math.ceil(total / limit),
+        totalItems: total,
+      });
+    });
+
+    // 4. Writer CRUD
+    app.post(
+      "/api/writer/ebooks",
+      authMiddleware,
+      checkRoleMiddleware(["writer"]),
+      async (req, res) => {
+        const result = await ebooksCollection.insertOne({
+          ...req.body,
+          writerEmail: req.user.email,
+          price: parseFloat(req.body.price),
+          status: "available",
+          createdAt: new Date(),
+        });
+        res.send(result);
+      },
+    );
+
+    app.get(
+      "/api/writer/ebooks",
+      authMiddleware,
+      checkRoleMiddleware(["writer"]),
+      async (req, res) => {
+        const data = await ebooksCollection
+          .find({ writerEmail: req.user.email })
+          .toArray();
+        res.send(data);
+      },
+    );
+
+    app.put(
+      "/api/writer/ebooks/:id",
+      authMiddleware,
+      checkRoleMiddleware(["writer"]),
+      async (req, res) => {
+        const result = await ebooksCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          { $set: { ...req.body, price: parseFloat(req.body.price) } },
+        );
+        res.send(result);
+      },
+    );
+
+    app.delete(
+      "/api/writer/ebooks/:id",
+      authMiddleware,
+      checkRoleMiddleware(["writer"]),
+      async (req, res) => {
+        const result = await ebooksCollection.deleteOne({
+          _id: new ObjectId(req.params.id),
+        });
+        res.send(result);
+      },
+    );
+
+    app.get(
+      "/api/writer/sales",
+      authMiddleware,
+      checkRoleMiddleware(["writer"]),
+      async (req, res) => {
+        const users = await usersCollection
+          .find({ "purchases.writerEmail": req.user.email })
+          .toArray();
+        const sales = users.flatMap((u) =>
+          (u.purchases || []).filter((p) => p.writerEmail === req.user.email),
+        );
+        res.send(sales);
+      },
+    );
+
+    // 5. Bookmarks System
+    app.post("/api/bookmarks/toggle", authMiddleware, async (req, res) => {
+      const user = await usersCollection.findOne({ email: req.user.email });
+      const hasMarked = user?.bookmarks?.includes(req.body.ebookId);
+      const op = hasMarked ? "$pull" : "$addToSet";
+
+      await usersCollection.updateOne(
+        { email: req.user.email },
+        { [op]: { bookmarks: req.body.ebookId } },
+      );
+      res.send({ message: hasMarked ? "Removed" : "Added" });
+    });
+
+    app.get("/api/bookmarks", authMiddleware, async (req, res) => {
+      const user = await usersCollection.findOne({ email: req.user.email });
+      const ids = (user?.bookmarks || []).map((id) => new ObjectId(id));
+      const data = await ebooksCollection.find({ _id: { $in: ids } }).toArray();
+      res.send(data);
+    });
+
+    app.post("/api/payments/success", authMiddleware, async (req, res) => {
+      const {
+        transactionId,
+        ebookId,
+        amount,
+        ebookTitle,
+        writerEmail,
+        writerName,
+      } = req.body;
+
+      await usersCollection.updateOne(
+        { email: req.user.email },
+        {
+          $push: {
+            purchases: {
+              transactionId,
+              ebookId,
+              ebookTitle,
+              amount,
+              writerEmail,
+              writerName,
+              buyerName: req.user.name,
+              buyerEmail: req.user.email,
+              date: new Date(),
+            },
+          },
+        },
+      );
+
+      await ebooksCollection.updateOne(
+        { _id: new ObjectId(ebookId) },
+        { $set: { status: "sold" } },
+      );
+      res.send({ success: true });
+    });
+
+    // 6. Reader & Admin Dashboards
+    app.get("/api/user/dashboard", authMiddleware, async (req, res) => {
+      const user = await usersCollection.findOne({ email: req.user.email });
+      const purchases = user?.purchases || [];
+      const ids = purchases.map((p) => new ObjectId(p.ebookId));
+      const purchasedEbooks = await ebooksCollection
+        .find({ _id: { $in: ids } })
+        .toArray();
+      res.send({ purchases, purchasedEbooks });
+    });
+
+    app.get(
+      "/api/admin/users",
+      authMiddleware,
+      checkRoleMiddleware(["admin"]),
+      async (req, res) => {
+        const data = await usersCollection.find().toArray();
+        res.send(data);
+      },
+    );
+
+    app.patch(
+      "/api/admin/users/:id",
+      authMiddleware,
+      checkRoleMiddleware(["admin"]),
+      async (req, res) => {
+        const result = await usersCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          { $set: { role: req.body.role } },
+        );
+        res.send(result);
+      },
+    );
+
+    app.delete(
+      "/api/admin/users/:id",
+      authMiddleware,
+      checkRoleMiddleware(["admin"]),
+      async (req, res) => {
+        const result = await usersCollection.deleteOne({
+          _id: new ObjectId(req.params.id),
+        });
+        res.send(result);
+      },
+    );
+
+    app.get(
+      "/api/admin/ebooks",
+      authMiddleware,
+      checkRoleMiddleware(["admin"]),
+      async (req, res) => {
+        const data = await ebooksCollection.find().toArray();
+        res.send(data);
+      },
+    );
+
+    app.get(
+      "/api/admin/analytics",
+      authMiddleware,
+      checkRoleMiddleware(["admin"]),
+      async (req, res) => {
+        const allUsers = await usersCollection.find().toArray();
+        const allTransactions = allUsers.flatMap((u) => u.purchases || []);
+
+        const totalUsers = allUsers.filter((u) => u.role === "user").length;
+        const totalWriters = allUsers.filter((u) => u.role === "writer").length;
+        const totalEbooksSold = await ebooksCollection.countDocuments({
+          status: "sold",
+        });
+        const totalRevenue = allTransactions.reduce(
+          (sum, t) => sum + t.amount,
+          0,
+        );
+
+        const genreChart = await ebooksCollection
+          .aggregate([{ $group: { _id: "$genre", count: { $sum: 1 } } }])
+          .toArray();
+
+        res.send({
+          totalUsers,
+          totalWriters,
+          totalEbooksSold,
+          totalRevenue,
+          allTransactions,
+          genreChart,
+        });
+      },
+    );
 
     app.listen(port, () => console.log(`Server running on port ${port}`));
   } catch (err) {
