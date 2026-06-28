@@ -91,53 +91,64 @@ async function run() {
     });
 
     // 3. Browse Page
-    app.get("/api/ebooks", async (req, res) => {
-      const {
-        search,
-        genre,
-        minPrice,
-        maxPrice,
-        availability,
-        sortBy,
-        page = 1,
-        limit = 8,
-      } = req.query;
-      let query = {};
+   app.get("/api/ebooks", async (req, res) => {
+  const {
+    search,
+    genre,
+    minPrice,
+    maxPrice,
+    availability,
+    sortBy,
+    page = 1,
+    limit = 8,
+  } = req.query;
 
-      if (search) {
-        query.$or = [
-          { title: { $regex: search, $options: "i" } },
-          { writerName: { $regex: search, $options: "i" } },
-        ];
-      }
-      if (genre) query.genre = genre;
-      if (availability) query.status = availability;
-      if (minPrice || maxPrice) {
-        query.price = {
-          $gte: parseFloat(minPrice || 0),
-          $lte: parseFloat(maxPrice || 9999),
-        };
-      }
+  const query = {};
 
-      let sortOpts = { createdAt: -1 };
-      if (sortBy === "price-low") sortOpts = { price: 1 };
-      if (sortBy === "price-high") sortOpts = { price: -1 };
+  if (search) {
+    query.$or = [
+      { title: { $regex: search, $options: "i" } },
+      { writerName: { $regex: search, $options: "i" } },
+    ];
+  }
 
-      const skip = (parseInt(page) - 1) * parseInt(limit);
-      const data = await ebooksCollection
-        .find(query)
-        .sort(sortOpts)
-        .skip(skip)
-        .limit(parseInt(limit))
-        .toArray();
-      const total = await ebooksCollection.countDocuments(query);
+  if (genre) query.genre = genre;
 
-      res.send({
-        data,
-        totalPages: Math.ceil(total / limit),
-        totalItems: total,
-      });
-    });
+  if (availability) {
+    if (availability === "sold") query.status = "sold";
+    if (availability === "available") query.status = "available";
+  }
+
+  if (minPrice || maxPrice) {
+    query.price = {
+      $gte: Number(minPrice || 0),
+      $lte: Number(maxPrice || 999999),
+    };
+  }
+
+  let sortOpts = { createdAt: -1 };
+
+  if (sortBy === "price-low") sortOpts = { price: 1 };
+  if (sortBy === "price-high") sortOpts = { price: -1 };
+  if (sortBy === "newest") sortOpts = { createdAt: -1 };
+
+  const skip = (Number(page) - 1) * Number(limit);
+
+  const data = await ebooksCollection
+    .find(query)
+    .sort(sortOpts)
+    .skip(skip)
+    .limit(Number(limit))
+    .toArray();
+
+  const total = await ebooksCollection.countDocuments(query);
+
+  res.send({
+    data,
+    totalPages: Math.ceil(total / limit),
+    totalItems: total,
+  });
+});
 
     // 4. Writer CRUD
     app.post(
