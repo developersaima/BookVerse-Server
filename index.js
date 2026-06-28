@@ -72,7 +72,7 @@ async function run() {
     // 2. Home Page
     app.get("/api/public/home", async (req, res) => {
       const ebooks = await ebooksCollection
-        .find({ status: "available" })
+        .find({ $or: [{ status: "available" }, { status: "In Stock" }] })
         .sort({ createdAt: -1 })
         .limit(6)
         .toArray();
@@ -80,6 +80,7 @@ async function run() {
         .find({ role: "writer" })
         .limit(3)
         .toArray();
+      console.log(ebooks);
       res.send({ ebooks, topWriters });
     });
 
@@ -91,64 +92,76 @@ async function run() {
     });
 
     // 3. Browse Page
-   app.get("/api/ebooks", async (req, res) => {
-  const {
-    search,
-    genre,
-    minPrice,
-    maxPrice,
-    availability,
-    sortBy,
-    page = 1,
-    limit = 8,
-  } = req.query;
+    app.get("/api/ebooks", async (req, res) => {
+      try {
+        const {
+          search,
+          genre,
+          minPrice,
+          maxPrice,
+          availability,
+          sortBy,
+          page = 1,
+          limit = 8,
+        } = req.query;
 
-  const query = {};
+        const query = {};
 
-  if (search) {
-    query.$or = [
-      { title: { $regex: search, $options: "i" } },
-      { writerName: { $regex: search, $options: "i" } },
-    ];
-  }
+        if (search) {
+          query.$or = [
+            { title: { $regex: search, $options: "i" } },
+            { writerName: { $regex: search, $options: "i" } },
+          ];
+        }
 
-  if (genre) query.genre = genre;
+        if (genre) query.genre = genre;
 
-  if (availability) {
-    if (availability === "sold") query.status = "sold";
-    if (availability === "available") query.status = "available";
-  }
+        if (availability) {
+          const normalizedAvail = availability.toLowerCase();
+          if (normalizedAvail === "sold out" || normalizedAvail === "sold") {
+            query.status = "Sold Out";
+          } else if (
+            normalizedAvail === "in stock" ||
+            normalizedAvail === "available"
+          ) {
+            query.status = "In Stock";
+          }
+        }
 
-  if (minPrice || maxPrice) {
-    query.price = {
-      $gte: Number(minPrice || 0),
-      $lte: Number(maxPrice || 999999),
-    };
-  }
+        if (minPrice || maxPrice) {
+          query.price = {
+            $gte: Number(minPrice || 0),
+            $lte: Number(maxPrice || 999999),
+          };
+        }
+        let sortOpts = { createdAt: -1 };
+        if (sortBy === "price-low") sortOpts = { price: 1 };
+        if (sortBy === "price-high") sortOpts = { price: -1 };
+        if (sortBy === "newest") sortOpts = { createdAt: -1 };
 
-  let sortOpts = { createdAt: -1 };
+        const currentPage = Number(page) || 1;
+        const currentLimit = Number(limit) || 8;
+        const skip = (currentPage - 1) * currentLimit;
 
-  if (sortBy === "price-low") sortOpts = { price: 1 };
-  if (sortBy === "price-high") sortOpts = { price: -1 };
-  if (sortBy === "newest") sortOpts = { createdAt: -1 };
+        const data = await ebooksCollection
+          .find(query)
+          .sort(sortOpts)
+          .skip(skip)
+          .limit(currentLimit)
+          .toArray();
 
-  const skip = (Number(page) - 1) * Number(limit);
+        const total = await ebooksCollection.countDocuments(query);
 
-  const data = await ebooksCollection
-    .find(query)
-    .sort(sortOpts)
-    .skip(skip)
-    .limit(Number(limit))
-    .toArray();
-
-  const total = await ebooksCollection.countDocuments(query);
-
-  res.send({
-    data,
-    totalPages: Math.ceil(total / limit),
-    totalItems: total,
-  });
-});
+        res.send({
+          data,
+          totalPages: Math.ceil(total / currentLimit),
+          totalItems: total,
+        });
+      } catch (error) {
+        console.error("Error fetching ebooks:", error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
 
     // 4. Writer CRUD
     app.post(
