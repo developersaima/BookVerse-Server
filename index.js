@@ -163,9 +163,8 @@ async function run() {
       }
     });
 
-    // 4. Writer CRUD
     app.post(
-      "/api/writer/ebooks",
+      "/api/ebooks",
       authMiddleware,
       checkRoleMiddleware(["writer"]),
       async (req, res) => {
@@ -181,7 +180,7 @@ async function run() {
     );
 
     app.get(
-      "/api/writer/ebooks",
+      "/api/ebooks",
       authMiddleware,
       checkRoleMiddleware(["writer"]),
       async (req, res) => {
@@ -193,30 +192,54 @@ async function run() {
     );
 
     app.put(
-      "/api/writer/ebooks/:id",
+      "/api/ebooks/:id",
       authMiddleware,
       checkRoleMiddleware(["writer"]),
       async (req, res) => {
+        const { id } = req.params;
+        const {
+          title,
+          description,
+          price,
+          genre,
+          coverImage,
+          language,
+          isbn,
+          pageCount,
+        } = req.body;
+
         const result = await ebooksCollection.updateOne(
-          { _id: new ObjectId(req.params.id) },
-          { $set: { ...req.body, price: parseFloat(req.body.price) } },
+          { _id: new ObjectId(id), writerEmail: req.user.email },
+          {
+            $set: {
+              title,
+              description,
+              price: parseFloat(price),
+              genre,
+              coverImage,
+              language,
+              isbn,
+              pageCount,
+              updatedAt: new Date(),
+            },
+          },
         );
         res.send(result);
       },
     );
 
     app.delete(
-      "/api/writer/ebooks/:id",
+      "/api/ebooks/:id",
       authMiddleware,
       checkRoleMiddleware(["writer"]),
       async (req, res) => {
         const result = await ebooksCollection.deleteOne({
           _id: new ObjectId(req.params.id),
+          writerEmail: req.user.email,
         });
         res.send(result);
       },
     );
-
     app.get(
       "/api/writer/sales",
       authMiddleware,
@@ -232,25 +255,51 @@ async function run() {
       },
     );
 
-    // 5. Bookmarks System
-    app.post("/api/bookmarks/toggle", authMiddleware, async (req, res) => {
-      const user = await usersCollection.findOne({ email: req.user.email });
-      const hasMarked = user?.bookmarks?.includes(req.body.ebookId);
-      const op = hasMarked ? "$pull" : "$addToSet";
+  // 5. Bookmarks System - Fixed version
+app.post("/api/bookmarks/toggle", authMiddleware, async (req, res) => {
+  try {
+    const user = await usersCollection.findOne({ email: req.user.email });
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+    
+    const ebookId = req.body.ebookId;
+    const hasMarked = user?.bookmarks?.includes(ebookId);
+    const op = hasMarked ? "$pull" : "$addToSet";
 
-      await usersCollection.updateOne(
-        { email: req.user.email },
-        { [op]: { bookmarks: req.body.ebookId } },
-      );
-      res.send({ message: hasMarked ? "Removed" : "Added" });
-    });
+    await usersCollection.updateOne(
+      { email: req.user.email },
+      { [op]: { bookmarks: ebookId } }
+    );
+    
+    res.send({ message: hasMarked ? "Removed" : "Added", success: true });
+  } catch (error) {
+    console.error("Bookmark toggle error:", error);
+    res.status(500).json({ success: false, message: "Failed to toggle bookmark" });
+  }
+});
 
-    app.get("/api/bookmarks", authMiddleware, async (req, res) => {
-      const user = await usersCollection.findOne({ email: req.user.email });
-      const ids = (user?.bookmarks || []).map((id) => new ObjectId(id));
-      const data = await ebooksCollection.find({ _id: { $in: ids } }).toArray();
-      res.send(data);
-    });
+app.get("/api/bookmarks", authMiddleware, async (req, res) => {
+  try {
+    const user = await usersCollection.findOne({ email: req.user.email });
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+    
+    const bookmarkIds = (user?.bookmarks || []).map((id) => new ObjectId(id));
+    
+    const data = await ebooksCollection
+      .find({ _id: { $in: bookmarkIds } })
+      .toArray();
+    
+    res.send(data);
+  } catch (error) {
+    console.error("Error fetching bookmarks:", error);
+    res.status(500).json({ success: false, message: "Failed to fetch bookmarks" });
+  }
+});
+
+ 
 
     app.post("/api/payments/success", authMiddleware, async (req, res) => {
       const {
