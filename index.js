@@ -347,13 +347,54 @@ async function run() {
 
     // 6. Reader & Admin Dashboards
     app.get("/api/user/dashboard", authMiddleware, async (req, res) => {
-      const user = await usersCollection.findOne({ email: req.user.email });
-      const purchases = user?.purchases || [];
-      const ids = purchases.map((p) => new ObjectId(p.ebookId));
-      const purchasedEbooks = await ebooksCollection
-        .find({ _id: { $in: ids } })
-        .toArray();
-      res.send({ purchases, purchasedEbooks });
+      try {
+        const user = await usersCollection.findOne({ email: req.user.email });
+
+        if (!user) {
+          return res.status(404).json({
+            success: false,
+            message: "User not found",
+          });
+        }
+
+        const purchases = user.purchases || [];
+
+        // Get purchased ebooks with full details
+        const ebookIds = purchases.map((p) => new ObjectId(p.ebookId));
+        const purchasedEbooks = await ebooksCollection
+          .find({ _id: { $in: ebookIds } })
+          .toArray();
+
+        // Merge purchase data with ebook data
+        const purchasesWithDetails = purchases.map((purchase) => {
+          const ebook = purchasedEbooks.find(
+            (e) => e._id.toString() === purchase.ebookId,
+          );
+          return {
+            ...purchase,
+            ...ebook,
+            _id: ebook?._id || purchase.ebookId,
+            title: purchase.ebookTitle || ebook?.title || "Unknown Title",
+            writerName:
+              purchase.writerName || ebook?.writerName || "Unknown Author",
+            coverImage: purchase.coverImage || ebook?.coverImage || "",
+            genre: purchase.genre || ebook?.genre || "",
+            price: purchase.amount || ebook?.price || 0,
+          };
+        });
+
+        res.json({
+          success: true,
+          purchases: purchasesWithDetails,
+          purchasedEbooks: purchasedEbooks,
+        });
+      } catch (error) {
+        console.error("Dashboard error:", error);
+        res.status(500).json({
+          success: false,
+          message: error.message,
+        });
+      }
     });
 
     app.get(
@@ -466,87 +507,122 @@ async function run() {
       },
     );
 
-    
     // save ebook purchase
 
-    app.post("/api/payments/success", async (req, res) => {
-      const { email, ebookId, amount } = req.body;
+    app.post("/api/payments/success", authMiddleware, async (req, res) => {
+      try {
+        const {
+          transactionId,
+          ebookId,
+          amount,
+          ebookTitle,
+          writerEmail,
+          writerName,
+          coverImage,
+          genre,
+          buyerName,
+          buyerEmail,
+        } = req.body;
 
-      if (!email || !ebookId || !amount) {
-        return res.status(400).json({
-          success: false,
-          message: "Missing fields",
+        // Validate required fields
+        if (!ebookId || !amount) {
+          return res.status(400).json({
+            success: false,
+            message: "Ebook ID and amount are required",
+          });
+        }
+
+        // Find the ebook
+        const ebook = await ebooksCollection.findOne({
+          _id: new ObjectId(ebookId),
         });
-      }
 
-      // ebook find
-      const ebook = await ebooksCollection.findOne({
-        _id: new ObjectId(ebookId),
-      });
+        if (!ebook) {
+          return res.status(404).json({
+            success: false,
+            message: "Ebook not found",
+          });
+        }
 
-      if (!ebook) {
-        return res.status(404).json({
-          success: false,
-          message: "Ebook not found",
-        });
-      }
+        // Get user email from either request body or auth middleware
+        const userEmail = buyerEmail || req.user?.email || email;
 
-      // already purchased check
-      const alreadyPurchased = await usersCollection.findOne({
-        email,
-        purchasedEbooks: ebookId,
-      });
+        if (!userEmail) {
+          return res.status(400).json({
+            success: false,
+            message: "User email is required",
+          });
+        }
 
-      if (alreadyPurchased) {
-        return res.json({
-          success: true,
-          message: "Already purchased",
-        });
-      }
+        // Check if already purchased
+        const user = await usersCollection.findOne({ email: userEmail });
+        const alreadyPurchased = user?.purchases?.some(
+          (p) => p.ebookId === ebookId,
+        );
 
-      // user update
-      const result = await usersCollection.updateOne(
-        {
-          email,
-        },
+        if (alreadyPurchased) {
+          return res.json({
+            success: true,
+            message: "Already purchased",
+          });
+        }
 
-        {
-          $push: {
-            purchasedEbooks: ebookId,
+        // Prepare purchase object with all fields
+        const purchase = {
+          transactionId: transactionId || `TXN-${Date.now()}`,
+          ebookId: ebookId,
+          ebookTitle: ebookTitle || ebook.title || "Unknown Title",
+          amount: Number(amount),
+          writerEmail: writerEmail || ebook.writerEmail || "Unknown",
+          writerName: writerName || ebook.writerName || "Unknown Author",
+          coverImage: coverImage || ebook.coverImage || "",
+          genre: genre || ebook.genre || "",
+          buyerName: buyerName || req.user?.name || "User",
+          buyerEmail: userEmail,
+          purchaseDate: new Date().toISOString(),
+          date: new Date(),
+          status: "completed",
+        };
 
-            purchases: {
-              ebookId,
-
-              amount: Number(amount),
-
-              title: ebook.title,
-
-              writerEmail: ebook.writerEmail,
-
-              purchaseDate: new Date().toISOString(),
+        // Update user - add to purchases array
+        const result = await usersCollection.updateOne(
+          { email: userEmail },
+          {
+            $push: {
+              purchases: purchase,
             },
           },
-        },
-      );
+        );
 
-      // ebook sales increment
-      await ebooksCollection.updateOne(
-        {
-          _id: new ObjectId(ebookId),
-        },
-
-        {
-          $inc: {
-            salesCount: 1,
+        // Mark ebook as sold
+        await ebooksCollection.updateOne(
+          { _id: new ObjectId(ebookId) },
+          {
+            $set: {
+              status: "sold",
+              soldAt: new Date(),
+              buyerEmail: userEmail,
+              buyerName: buyerName || req.user?.name || "User",
+            },
+            $inc: {
+              salesCount: 1,
+            },
           },
-        },
-      );
+        );
 
-      return res.json({
-        success: true,
-
-        modifiedCount: result.modifiedCount,
-      });
+        return res.json({
+          success: true,
+          message: "Payment recorded successfully",
+          modifiedCount: result.modifiedCount,
+          purchase: purchase,
+        });
+      } catch (error) {
+        console.error("Payment success error:", error);
+        return res.status(500).json({
+          success: false,
+          message: error.message || "Internal server error",
+        });
+      }
     });
     app.listen(port, () => console.log(`Server running on port ${port}`));
   } catch (err) {
