@@ -52,8 +52,8 @@ const checkRoleMiddleware = (roles) => (req, res, next) => {
 
 async function run() {
   try {
-    // await client.connect();
-    // console.log("Connected to MongoDB!");
+    await client.connect();
+    console.log("Connected to MongoDB!");
 
     // DB Collections
     const db = client.db("book-verse");
@@ -344,7 +344,77 @@ async function run() {
       );
       res.send({ success: true });
     });
+// Admin - Delete any ebook
+app.delete(
+  "/api/admin/ebooks/:id",
+  authMiddleware,
+  checkRoleMiddleware(["admin"]),
+  async (req, res) => {
+    try {
+      const result = await ebooksCollection.deleteOne({
+        _id: new ObjectId(req.params.id),
+      });
+      if (result.deletedCount === 0) {
+        return res.status(404).json({ success: false, message: "Ebook not found" });
+      }
+      res.json({ success: true, message: "Ebook deleted successfully", result });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  }
+);
 
+// Admin - Update ebook status
+app.patch(
+  "/api/admin/ebooks/:id",
+  authMiddleware,
+  checkRoleMiddleware(["admin"]),
+  async (req, res) => {
+    try {
+      const { status } = req.body;
+      if (!status) return res.status(400).json({ success: false, message: "Status is required" });
+      
+      const result = await ebooksCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        { $set: { status, updatedAt: new Date() } }
+      );
+      if (result.matchedCount === 0) {
+        return res.status(404).json({ success: false, message: "Ebook not found" });
+      }
+      res.json({ success: true, message: `Ebook status updated to ${status}`, result });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  }
+);
+
+// Admin - Get all transactions
+app.get(
+  "/api/admin/transactions",
+  authMiddleware,
+  checkRoleMiddleware(["admin"]),
+  async (req, res) => {
+    try {
+      const allUsers = await usersCollection.find().toArray();
+      const allTransactions = [];
+      allUsers.forEach((user) => {
+        if (user.purchases && user.purchases.length > 0) {
+          user.purchases.forEach((purchase) => {
+            allTransactions.push({
+              ...purchase,
+              userEmail: user.email,
+              userName: user.name,
+            });
+          });
+        }
+      });
+      allTransactions.sort((a, b) => new Date(b.date) - new Date(a.date));
+      res.json({ success: true, transactions: allTransactions });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  }
+);
     // 6. Reader & Admin Dashboards
     app.get("/api/user/dashboard", authMiddleware, async (req, res) => {
       try {
@@ -624,7 +694,7 @@ async function run() {
         });
       }
     });
-    // app.listen(port, () => console.log(`Server running on port ${port}`));
+    app.listen(port, () => console.log(`Server running on port ${port}`));
   } catch (err) {
     console.error(err);
   }
