@@ -57,7 +57,7 @@ async function run() {
 
     // DB Collections
     const db = client.db("book-verse");
-    const usersCollection = db.collection("users");
+    const usersCollection = db.collection("user");
     const ebooksCollection = db.collection("ebooks");
 
     // 1. User Role
@@ -257,6 +257,7 @@ async function run() {
 
   // 5. Bookmarks System - Fixed version
 app.post("/api/bookmarks/toggle", authMiddleware, async (req, res) => {
+
   try {
     const user = await usersCollection.findOne({ email: req.user.email });
     if (!user) {
