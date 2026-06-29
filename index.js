@@ -255,52 +255,59 @@ async function run() {
       },
     );
 
-  // 5. Bookmarks System - Fixed version
-app.post("/api/bookmarks/toggle", authMiddleware, async (req, res) => {
+    // 5. Bookmarks System - Fixed version
+    app.post("/api/bookmarks/toggle", authMiddleware, async (req, res) => {
+      try {
+        const user = await usersCollection.findOne({ email: req.user.email });
+        if (!user) {
+          return res
+            .status(404)
+            .json({ success: false, message: "User not found" });
+        }
 
-  try {
-    const user = await usersCollection.findOne({ email: req.user.email });
-    if (!user) {
-      return res.status(404).json({ success: false, message: "User not found" });
-    }
-    
-    const ebookId = req.body.ebookId;
-    const hasMarked = user?.bookmarks?.includes(ebookId);
-    const op = hasMarked ? "$pull" : "$addToSet";
+        const ebookId = req.body.ebookId;
+        const hasMarked = user?.bookmarks?.includes(ebookId);
+        const op = hasMarked ? "$pull" : "$addToSet";
 
-    await usersCollection.updateOne(
-      { email: req.user.email },
-      { [op]: { bookmarks: ebookId } }
-    );
-    
-    res.send({ message: hasMarked ? "Removed" : "Added", success: true });
-  } catch (error) {
-    console.error("Bookmark toggle error:", error);
-    res.status(500).json({ success: false, message: "Failed to toggle bookmark" });
-  }
-});
+        await usersCollection.updateOne(
+          { email: req.user.email },
+          { [op]: { bookmarks: ebookId } },
+        );
 
-app.get("/api/bookmarks", authMiddleware, async (req, res) => {
-  try {
-    const user = await usersCollection.findOne({ email: req.user.email });
-    if (!user) {
-      return res.status(404).json({ success: false, message: "User not found" });
-    }
-    
-    const bookmarkIds = (user?.bookmarks || []).map((id) => new ObjectId(id));
-    
-    const data = await ebooksCollection
-      .find({ _id: { $in: bookmarkIds } })
-      .toArray();
-    
-    res.send(data);
-  } catch (error) {
-    console.error("Error fetching bookmarks:", error);
-    res.status(500).json({ success: false, message: "Failed to fetch bookmarks" });
-  }
-});
+        res.send({ message: hasMarked ? "Removed" : "Added", success: true });
+      } catch (error) {
+        console.error("Bookmark toggle error:", error);
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to toggle bookmark" });
+      }
+    });
 
- 
+    app.get("/api/bookmarks", authMiddleware, async (req, res) => {
+      try {
+        const user = await usersCollection.findOne({ email: req.user.email });
+        if (!user) {
+          return res
+            .status(404)
+            .json({ success: false, message: "User not found" });
+        }
+
+        const bookmarkIds = (user?.bookmarks || []).map(
+          (id) => new ObjectId(id),
+        );
+
+        const data = await ebooksCollection
+          .find({ _id: { $in: bookmarkIds } })
+          .toArray();
+
+        res.send(data);
+      } catch (error) {
+        console.error("Error fetching bookmarks:", error);
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to fetch bookmarks" });
+      }
+    });
 
     app.post("/api/payments/success", authMiddleware, async (req, res) => {
       const {
@@ -399,31 +406,63 @@ app.get("/api/bookmarks", authMiddleware, async (req, res) => {
       authMiddleware,
       checkRoleMiddleware(["admin"]),
       async (req, res) => {
-        const allUsers = await usersCollection.find().toArray();
-        const allTransactions = allUsers.flatMap((u) => u.purchases || []);
+        try {
+          const allUsers = await usersCollection.find().toArray();
+          const allTransactions = allUsers.flatMap((u) => u.purchases || []);
 
-        const totalUsers = allUsers.filter((u) => u.role === "user").length;
-        const totalWriters = allUsers.filter((u) => u.role === "writer").length;
-        const totalEbooksSold = await ebooksCollection.countDocuments({
-          status: "sold",
-        });
-        const totalRevenue = allTransactions.reduce(
-          (sum, t) => sum + t.amount,
-          0,
-        );
+          // Fix: Count both "user" and "reader" as readers
+          const totalUsers = allUsers.filter(
+            (u) => u.role === "user" || u.role === "reader",
+          ).length;
+          const totalWriters = allUsers.filter(
+            (u) => u.role === "writer",
+          ).length;
+          const totalEbooksSold = await ebooksCollection.countDocuments({
+            status: { $in: ["sold", "Sold Out"] },
+          });
+          const totalRevenue = allTransactions.reduce(
+            (sum, t) => sum + (t.amount || 0),
+            0,
+          );
 
-        const genreChart = await ebooksCollection
-          .aggregate([{ $group: { _id: "$genre", count: { $sum: 1 } } }])
-          .toArray();
+          const genreChart = await ebooksCollection
+            .aggregate([{ $group: { _id: "$genre", count: { $sum: 1 } } }])
+            .toArray();
 
-        res.send({
-          totalUsers,
-          totalWriters,
-          totalEbooksSold,
-          totalRevenue,
-          allTransactions,
-          genreChart,
-        });
+          // Generate monthly sales data
+          const monthlySales = {};
+          allTransactions.forEach((t) => {
+            if (t.date) {
+              const date = new Date(t.date);
+              const monthYear = `${date.toLocaleString("default", { month: "short" })} ${date.getFullYear()}`;
+              monthlySales[monthYear] =
+                (monthlySales[monthYear] || 0) + (t.amount || 0);
+            }
+          });
+
+          const monthlySalesArray = Object.entries(monthlySales).map(
+            ([month, sales]) => ({
+              month,
+              sales,
+            }),
+          );
+
+          res.send({
+            totalUsers,
+            totalWriters,
+            totalEbooksSold,
+            totalRevenue,
+            allTransactions,
+            genreChart,
+            monthlySales: monthlySalesArray,
+            allUsers,
+          });
+        } catch (error) {
+          console.error("Analytics error:", error);
+          res
+            .status(500)
+            .json({ success: false, message: "Failed to fetch analytics" });
+        }
       },
     );
 
