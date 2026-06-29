@@ -466,6 +466,88 @@ async function run() {
       },
     );
 
+    
+    // save ebook purchase
+
+    app.post("/api/payments/success", async (req, res) => {
+      const { email, ebookId, amount } = req.body;
+
+      if (!email || !ebookId || !amount) {
+        return res.status(400).json({
+          success: false,
+          message: "Missing fields",
+        });
+      }
+
+      // ebook find
+      const ebook = await ebooksCollection.findOne({
+        _id: new ObjectId(ebookId),
+      });
+
+      if (!ebook) {
+        return res.status(404).json({
+          success: false,
+          message: "Ebook not found",
+        });
+      }
+
+      // already purchased check
+      const alreadyPurchased = await usersCollection.findOne({
+        email,
+        purchasedEbooks: ebookId,
+      });
+
+      if (alreadyPurchased) {
+        return res.json({
+          success: true,
+          message: "Already purchased",
+        });
+      }
+
+      // user update
+      const result = await usersCollection.updateOne(
+        {
+          email,
+        },
+
+        {
+          $push: {
+            purchasedEbooks: ebookId,
+
+            purchases: {
+              ebookId,
+
+              amount: Number(amount),
+
+              title: ebook.title,
+
+              writerEmail: ebook.writerEmail,
+
+              purchaseDate: new Date().toISOString(),
+            },
+          },
+        },
+      );
+
+      // ebook sales increment
+      await ebooksCollection.updateOne(
+        {
+          _id: new ObjectId(ebookId),
+        },
+
+        {
+          $inc: {
+            salesCount: 1,
+          },
+        },
+      );
+
+      return res.json({
+        success: true,
+
+        modifiedCount: result.modifiedCount,
+      });
+    });
     app.listen(port, () => console.log(`Server running on port ${port}`));
   } catch (err) {
     console.error(err);
