@@ -52,8 +52,8 @@ const checkRoleMiddleware = (roles) => (req, res, next) => {
 
 async function run() {
   try {
-    await client.connect();
-    console.log("Connected to MongoDB!");
+    // await client.connect();
+    // console.log("Connected to MongoDB!");
 
     // DB Collections
     const db = client.db("book-verse");
@@ -624,7 +624,7 @@ async function run() {
         });
       }
     });
-    app.listen(port, () => console.log(`Server running on port ${port}`));
+    // app.listen(port, () => console.log(`Server running on port ${port}`));
   } catch (err) {
     console.error(err);
   }
